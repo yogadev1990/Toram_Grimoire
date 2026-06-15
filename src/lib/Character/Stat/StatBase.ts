@@ -199,10 +199,11 @@ abstract class StatElementBase {
   equals(stat: StatElementBase): boolean
   equals(statBase: StatBase, type: StatTypes): boolean
   equals(base: StatElementBase | StatBase, type?: StatTypes): boolean {
-    if (base instanceof StatElementBase) {
-      return base.base === this.base && base.type === this.type
+    if (base && (base as any).base !== undefined) {
+      return (base as any).base.baseId === this.base.baseId && (base as any).type === this.type
     }
-    return base === this.base && type === this.type
+    const targetBase = base as StatBase
+    return targetBase && targetBase.baseId === this.base.baseId && type === this.type
   }
 }
 

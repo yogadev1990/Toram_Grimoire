@@ -714,7 +714,13 @@ export default class EnchantDollEquipmentContainer {
         if (stat.value !== 1) {
           return null
         }
-        const pstat = positiveStats.find(_pstat => _pstat.equals(stat))!
+        const pstat = positiveStats.find(_pstat => _pstat.equals(stat))
+        if (!pstat) {
+          console.warn('[DEBUG] pstat is undefined!')
+          console.warn('positiveStats list:', positiveStats.map(p => ({ baseId: p.baseId, type: p.type, val: p.value })))
+          console.warn('searching for stat:', { baseId: stat.baseId, type: stat.type, val: stat.value })
+          return null
+        }
         if (pstat.value === 0) {
           return null
         }

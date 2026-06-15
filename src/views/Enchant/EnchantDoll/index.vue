@@ -60,13 +60,13 @@
     />
   </AppLayoutMain>
 </template>
-
 <script lang="ts" setup>
-import { type Ref, computed, nextTick, provide, reactive, readonly, ref, watch } from 'vue'
+import { type Ref, computed, nextTick, provide, reactive, readonly, ref, watch, onMounted, onUnmounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 
 import { useEnchantStore } from '@/stores/views/enchant'
 
+import Grimoire from '@/shared/Grimoire'
 import AutoSave from '@/shared/setup/AutoSave'
 import Confirm from '@/shared/setup/Confirm'
 import Notify from '@/shared/setup/Notify'
@@ -393,5 +393,169 @@ provide(EnchantDollInjectionKey, {
   equipmentState,
   positiveStatsState,
   negativeStatsState,
+})
+
+// --- API Injection ---
+const exposeAPI = () => {
+  ;(window as any).EnchantDollAPI = {
+    // 1. Reset state
+    reset: async () => {
+      doll.value = new EnchantDoll()
+      currentStep.value = 0
+      negativeStatsState.manually = []
+      negativeStatsState.auto = false
+      autoNegativeStatsResult.value = null
+      resultEquipment.value = null
+    },
+
+    // 2. Set Current Step
+    setStep: (stepId: number) => {
+      currentStep.value = stepId
+      if (stepId < StepIds.SelectNegativeStat) {
+        negativeStatsState.auto = false
+      }
+      if (stepId < StepIds.SelectNegativeStat) {
+        negativeStatsState.manually = []
+      }
+      resultEquipment.value = null
+    },
+
+    // 3. Inject Equipment Setup
+    injectEquipment: (typeId: number, originalPotential: number, autoFind: boolean) => {
+      const eq = currentEquipment.value
+      // typeId: 0 -> main weapon, 1 -> body armor, 2 -> main weapon (original element)
+      if (typeId === 0) {
+        eq.fieldType = EnchantEquipmentTypes.MainWeapon
+        eq.isOriginalElement = false
+      } else if (typeId === 1) {
+        eq.fieldType = EnchantEquipmentTypes.BodyArmor
+        eq.isOriginalElement = false
+      } else if (typeId === 2) {
+        eq.fieldType = EnchantEquipmentTypes.MainWeapon
+        eq.isOriginalElement = true
+      }
+      eq.originalPotential = originalPotential
+      equipmentState.autoFindPotentialMinimum = autoFind
+    },
+
+    // 4. Inject Positive Stats
+    injectPositiveStats: (stats: { baseId: string; type: number; value?: number }[]) => {
+      doll.value.positiveStats = []
+      stats.forEach(s => {
+        const statBase = Grimoire.Character.findStatBase(s.baseId)
+        if (!statBase) {
+          console.warn(`[EnchantDollAPI] statBase not found for baseId: ${s.baseId}`)
+          return
+        }
+        const origin = Grimoire.Enchant.findEnchantItem(statBase)
+        if (!origin) {
+          console.warn(`[EnchantDollAPI] EnchantItem not found for baseId: ${s.baseId}`)
+          return
+        }
+        const value = s.value !== undefined ? s.value : (positiveStatsState.autoFill ? origin.getLimit(s.type).max : 1)
+        doll.value.appendPositiveStat(origin, s.type, value)
+      })
+    },
+
+    // 5. Inject Negative Stats
+    injectNegativeStats: (
+      stats: { baseId: string; type: number; value?: number }[],
+      auto: boolean,
+      baseType?: number,
+      autoFindType?: number
+    ) => {
+      negativeStatsState.auto = auto
+      if (baseType !== undefined) {
+        doll.value.config.baseType = baseType
+      }
+      if (autoFindType !== undefined) {
+        doll.value.config.autoFindNegaitveStatsType = autoFindType
+      }
+
+      if (auto) {
+        const manuallyStats = stats.map(s => {
+          const statBase = Grimoire.Character.findStatBase(s.baseId)
+          if (!statBase) throw new Error(`statBase not found: ${s.baseId}`)
+          const origin = Grimoire.Enchant.findEnchantItem(statBase)!
+          const value = s.value !== undefined ? s.value : origin.getLimit(s.type).min
+          return new EnchantStat(origin, s.type, value)
+        })
+        negativeStatsState.manually = manuallyStats
+        updateAutoFindNegativeStats(true)
+      } else {
+        negativeStatsState.manually = []
+        stats.forEach(s => {
+          const statBase = Grimoire.Character.findStatBase(s.baseId)
+          if (!statBase) return
+          const origin = Grimoire.Enchant.findEnchantItem(statBase)
+          if (!origin) return
+          const value = s.value !== undefined ? s.value : origin.getLimit(s.type).min
+          negativeStatsState.manually.push(new EnchantStat(origin, s.type, value))
+        })
+      }
+    },
+
+    // 6. Trigger Calculation/Optimization
+    calculate: async () => {
+      loading.show()
+      await nextTick()
+      try {
+        if (equipmentState.autoFindPotentialMinimum) {
+          resultEquipment.value = autoFindPotentialMinimumEquipment()
+        } else {
+          resultEquipment.value = doll.value.calc(negativeStats.value)
+        }
+        doll.value.optimizeResults()
+        currentStep.value = StepIds.Result
+      } catch (err) {
+        console.error(err)
+      } finally {
+        loading.hide()
+      }
+    },
+
+    // 7. Get Current State Data
+    getState: () => {
+      return {
+        currentStep: currentStep.value,
+        equipment: {
+          fieldType: currentEquipment.value?.fieldType,
+          originalPotential: currentEquipment.value?.originalPotential,
+          isOriginalElement: currentEquipment.value?.isOriginalElement,
+          autoFindPotentialMinimum: equipmentState.autoFindPotentialMinimum,
+        },
+        positiveStats: doll.value.positiveStats.map(stat => ({
+          baseId: stat.itemBase.statBase.baseId,
+          type: stat.type,
+          value: stat.value,
+          showAmount: stat.showAmount(),
+        })),
+        negativeStats: negativeStats.value.map(stat => ({
+          baseId: stat.itemBase.statBase.baseId,
+          type: stat.type,
+          value: stat.value,
+          showAmount: stat.showAmount(),
+        })),
+        resultEquipment: resultEquipment.value ? {
+          originalPotential: resultEquipment.value.originalPotential,
+          realSuccessRate: resultEquipment.value.realSuccessRate,
+          steps: resultEquipment.value.steps.map(step => ({
+            type: step.type,
+            stepPotential: step.stepPotential,
+            remainingPotential: step.remainingPotential,
+            toString: step.toString(),
+          }))
+        } : null,
+      }
+    }
+  }
+}
+
+onMounted(() => {
+  exposeAPI()
+})
+
+onUnmounted(() => {
+  delete (window as any).EnchantDollAPI
 })
 </script>
